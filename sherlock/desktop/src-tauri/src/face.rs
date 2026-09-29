@@ -890,6 +890,25 @@ mod tests {
         assert_eq!(cropped.height(), 112);
     }
 
+    /// The ort crate must complete its OrtApi handshake with the bundled
+    /// ONNX Runtime library. A crate/library version mismatch panics deep
+    /// inside ort at first API use, which killed face detection silently
+    /// (#12). CI downloads the bundled runtime before running tests on all
+    /// platforms, so this guards the pairing everywhere we ship.
+    #[test]
+    fn bundled_onnxruntime_is_compatible_with_ort_crate() {
+        let lib_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib");
+        if !lib_dir.join(onnxruntime_lib_name()).exists() {
+            eprintln!("skipping: ONNX Runtime library not present in lib/");
+            return;
+        }
+        let loaded = init_ort_from_dir(&lib_dir).expect("ONNX Runtime init must succeed");
+        assert!(loaded, "library exists but was not loaded");
+        // SessionBuilder::new() performs the OrtApi version handshake.
+        ort::session::builder::SessionBuilder::new()
+            .expect("OrtApi handshake with bundled ONNX Runtime must succeed");
+    }
+
     #[test]
     fn onnxruntime_lib_name_has_correct_extension() {
         let name = onnxruntime_lib_name();
