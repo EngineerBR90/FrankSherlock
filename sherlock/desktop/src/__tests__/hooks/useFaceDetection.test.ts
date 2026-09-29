@@ -74,7 +74,7 @@ describe("useFaceDetection", () => {
   });
 
   it("polls face detection status", async () => {
-    const progress = { rootId: 1, total: 100, processed: 50, facesFound: 10, phase: "detecting" as const };
+    const progress = { rootId: 1, total: 100, processed: 50, facesFound: 10, phase: "detecting" as const, error: null };
     vi.mocked(getFaceDetectStatus).mockResolvedValue(progress);
 
     const { result } = renderHook(() => useFaceDetection(callbacks));
@@ -87,5 +87,78 @@ describe("useFaceDetection", () => {
     });
 
     expect(result.current.faceProgress).toEqual(progress);
+  });
+
+  it("surfaces a failed status as an error toast, not as running progress", async () => {
+    const failed = { rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "failed" as const, error: "ONNX Runtime init failed: version mismatch" };
+    vi.mocked(getFaceDetectStatus).mockResolvedValue(failed);
+
+    const { result } = renderHook(() => useFaceDetection(callbacks));
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(callbacks.onError).toHaveBeenCalledWith("ONNX Runtime init failed: version mismatch");
+    expect(result.current.faceProgress).toBeNull();
+  });
+
+  it("reports a lingering failed status only once", async () => {
+    const failed = { rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "failed" as const, error: "boom" };
+    vi.mocked(getFaceDetectStatus).mockResolvedValue(failed);
+
+    renderHook(() => useFaceDetection(callbacks));
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(callbacks.onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a new failure after a run started in between", async () => {
+    const failed = { rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "failed" as const, error: "boom" };
+    vi.mocked(getFaceDetectStatus).mockResolvedValue(failed);
+
+    renderHook(() => useFaceDetection(callbacks));
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    // A new run clears the failed state, then fails again
+    vi.mocked(getFaceDetectStatus).mockResolvedValue(null);
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    vi.mocked(getFaceDetectStatus).mockResolvedValue(failed);
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(callbacks.onError).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to a generic message when a failed status has no error text", async () => {
+    const failed = { rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "failed" as const, error: null };
+    vi.mocked(getFaceDetectStatus).mockResolvedValue(failed);
+
+    renderHook(() => useFaceDetection(callbacks));
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(callbacks.onError).toHaveBeenCalledWith("Face detection failed");
   });
 });

@@ -473,8 +473,11 @@ pub struct FaceDetectProgress {
     pub processed: u64,
     pub faces_found: u64,
     /// `"downloading"` while fetching models, `"loading"` while initializing
-    /// ONNX sessions, `"detecting"` while processing images.
+    /// ONNX sessions, `"detecting"` while processing images, `"failed"` when
+    /// the run aborted (kept until the next run starts so the UI can report it).
     pub phase: String,
+    /// Human-readable failure reason, only set when `phase` is `"failed"`.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

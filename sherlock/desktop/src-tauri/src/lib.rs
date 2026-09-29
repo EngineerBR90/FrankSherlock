@@ -897,14 +897,16 @@ fn detect_faces(
 ) -> Result<(), String> {
     require_writable(state.inner())?;
 
-    // Check if already running
+    // Check if already running (a lingering "failed" state does not block a retry)
     {
         let progress = state
             .face_detect_progress
             .lock()
             .expect("face progress mutex poisoned");
-        if progress.is_some() {
-            return Err("Face detection is already running".to_string());
+        if let Some(p) = progress.as_ref() {
+            if p.phase != "failed" {
+                return Err("Face detection is already running".to_string());
+            }
         }
     }
 
@@ -938,11 +940,18 @@ fn detect_faces(
             Ok(Err(e)) => log::error!("Face detection failed: {e}"),
             Err(e) => {
                 log::error!("Face detection task panicked: {e}");
-                // Clear progress so UI doesn't show stale state
+                // Leave a failed state so the UI can report the crash
                 let mut progress = progress_cleanup
                     .lock()
                     .expect("face progress mutex poisoned");
-                *progress = None;
+                *progress = Some(models::FaceDetectProgress {
+                    root_id,
+                    total: 0,
+                    processed: 0,
+                    faces_found: 0,
+                    phase: "failed".into(),
+                    error: Some(format!("Face detection crashed: {e}")),
+                });
             }
         }
     });
@@ -1229,19 +1238,37 @@ fn run_face_detection(
             processed: 0,
             faces_found: 0,
             phase: phase.into(),
+            error: None,
         });
     }
 
-    fn clear_progress(arc: &Arc<Mutex<Option<models::FaceDetectProgress>>>) {
+    /// Record a failure in the progress state (kept until the next run starts)
+    /// so the UI can report it, and pass the message through for logging.
+    fn set_failed(
+        arc: &Arc<Mutex<Option<models::FaceDetectProgress>>>,
+        root_id: i64,
+        error: String,
+    ) -> String {
         let mut progress = arc.lock().expect("face progress mutex poisoned");
-        *progress = None;
+        *progress = Some(models::FaceDetectProgress {
+            root_id,
+            total: 0,
+            processed: 0,
+            faces_found: 0,
+            phase: "failed".into(),
+            error: Some(error.clone()),
+        });
+        error
     }
 
     // Phase 1: Download models if needed
     set_phase(&progress_arc, root_id, "downloading");
     let buffalo_dir = face::ensure_models(models_dir).map_err(|e| {
-        clear_progress(&progress_arc);
-        format!("Failed to download face models: {e}")
+        set_failed(
+            &progress_arc,
+            root_id,
+            format!("Failed to download face models: {e}"),
+        )
     })?;
 
     // Phase 2: Initialize ONNX Runtime + load sessions
@@ -1249,28 +1276,34 @@ fn run_face_detection(
     match face::init_ort_from_dir(ort_lib_dir) {
         Ok(true) => log::info!("ONNX Runtime loaded from {}", ort_lib_dir.display()),
         Ok(false) => {
-            clear_progress(&progress_arc);
-            return Err(format!(
-                "ONNX Runtime library not found in {}. Run scripts/download-onnxruntime.sh to install it.",
-                ort_lib_dir.display()
+            return Err(set_failed(
+                &progress_arc,
+                root_id,
+                format!(
+                    "ONNX Runtime library not found in {}. Run scripts/download-onnxruntime.sh to install it.",
+                    ort_lib_dir.display()
+                ),
             ));
         }
         Err(e) => {
-            clear_progress(&progress_arc);
-            return Err(format!("ONNX Runtime init failed: {e}"));
+            return Err(set_failed(
+                &progress_arc,
+                root_id,
+                format!("ONNX Runtime init failed: {e}"),
+            ));
         }
     }
     let mut detector = face::FaceDetector::from_model_dir(&buffalo_dir).map_err(|e| {
-        clear_progress(&progress_arc);
-        format!("Failed to load face detection model: {e}")
+        set_failed(
+            &progress_arc,
+            root_id,
+            format!("Failed to load face detection model: {e}"),
+        )
     })?;
 
     // Get list of files to process
-    let files = db::list_files_needing_face_scan(db_path, root_id).map_err(|e| {
-        let mut progress = progress_arc.lock().expect("face progress mutex poisoned");
-        *progress = None;
-        format!("Failed to list files: {e}")
-    })?;
+    let files = db::list_files_needing_face_scan(db_path, root_id)
+        .map_err(|e| set_failed(&progress_arc, root_id, format!("Failed to list files: {e}")))?;
 
     let total = files.len() as u64;
 
@@ -1283,6 +1316,7 @@ fn run_face_detection(
             processed: 0,
             faces_found: 0,
             phase: "detecting".into(),
+            error: None,
         });
     }
 
@@ -1365,6 +1399,7 @@ fn run_face_detection(
                 processed,
                 faces_found,
                 phase: "detecting".into(),
+                error: None,
             });
         }
     }
@@ -1830,4 +1865,53 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed face detection run must leave a "failed" progress state
+    /// carrying the error so the UI can report it, instead of clearing the
+    /// progress and failing silently (#12).
+    #[test]
+    fn face_detection_failure_leaves_failed_progress() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // A models dir nested under a regular file makes ensure_models fail
+        // fast (create_dir_all -> NotADirectory) without touching the network.
+        let blocker = tmp.path().join("blocker");
+        std::fs::File::create(&blocker).expect("create blocker file");
+        let models_dir = blocker.join("models");
+
+        let progress_arc: Arc<Mutex<Option<models::FaceDetectProgress>>> =
+            Arc::new(Mutex::new(None));
+        let cancel_flag = AtomicBool::new(false);
+
+        let result = run_face_detection(
+            &tmp.path().join("index.sqlite"),
+            &models_dir,
+            &tmp.path().join("ort_lib"),
+            &tmp.path().join("face_crops"),
+            42,
+            progress_arc.clone(),
+            &cancel_flag,
+        );
+
+        assert!(
+            result.is_err(),
+            "run must fail when models cannot be stored"
+        );
+        let progress = progress_arc.lock().expect("progress mutex");
+        let state = progress
+            .as_ref()
+            .expect("failed state must be kept, not cleared");
+        assert_eq!(state.phase, "failed");
+        assert_eq!(state.root_id, 42);
+        assert!(
+            state.error.as_deref().unwrap_or("").contains("face models"),
+            "error should name the failing step, got: {:?}",
+            state.error
+        );
+    }
 }

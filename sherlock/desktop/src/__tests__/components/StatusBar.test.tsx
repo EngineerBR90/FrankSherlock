@@ -97,7 +97,7 @@ describe("StatusBar", () => {
         isScanning={false}
         runningScansCount={0}
         selectedCount={0}
-        faceProgress={{ rootId: 1, total: 200, processed: 75, facesFound: 12, phase: "detecting" }}
+        faceProgress={{ rootId: 1, total: 200, processed: 75, facesFound: 12, phase: "detecting", error: null }}
       />
     );
     expect(screen.getByText(/Faces: 75\/200/)).toBeInTheDocument();
@@ -111,7 +111,7 @@ describe("StatusBar", () => {
         isScanning={false}
         runningScansCount={0}
         selectedCount={0}
-        faceProgress={{ rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "downloading" }}
+        faceProgress={{ rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "downloading", error: null }}
       />
     );
     expect(screen.getByText("Downloading face models...")).toBeInTheDocument();
@@ -124,7 +124,7 @@ describe("StatusBar", () => {
         isScanning={false}
         runningScansCount={0}
         selectedCount={0}
-        faceProgress={{ rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "loading" }}
+        faceProgress={{ rootId: 1, total: 0, processed: 0, facesFound: 0, phase: "loading", error: null }}
       />
     );
     expect(screen.getByText("Loading face models...")).toBeInTheDocument();

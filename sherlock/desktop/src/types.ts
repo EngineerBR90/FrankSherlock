@@ -292,7 +292,8 @@ export type FaceDetectProgress = {
   total: number;
   processed: number;
   facesFound: number;
-  phase: "downloading" | "loading" | "detecting";
+  phase: "downloading" | "loading" | "detecting" | "failed";
+  error: string | null;
 };
 
 export type PersonInfo = {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cancelFaceDetect, detectFaces, getFaceDetectStatus } from "../api";
 import type { FaceDetectProgress, RootInfo } from "../types";
 import { errorMessage } from "../utils";
@@ -12,17 +12,29 @@ type FaceDetectionCallbacks = {
 export function useFaceDetection({ pollMs, onNotice, onError }: FaceDetectionCallbacks) {
   const [facesMode, setFacesMode] = useState(false);
   const [faceProgress, setFaceProgress] = useState<FaceDetectProgress | null>(null);
+  const failureReported = useRef(false);
 
-  // Poll face detection progress
+  // Poll face detection progress. A "failed" status is surfaced once as an
+  // error toast and never rendered as a running job (the backend keeps it
+  // until the next run starts, so it must not re-fire on every poll).
   useEffect(() => {
     const id = setInterval(async () => {
       try {
         const status = await getFaceDetectStatus();
-        setFaceProgress(status);
+        if (status?.phase === "failed") {
+          if (!failureReported.current) {
+            failureReported.current = true;
+            onError(status.error || "Face detection failed");
+          }
+          setFaceProgress(null);
+        } else {
+          failureReported.current = false;
+          setFaceProgress(status);
+        }
       } catch { /* ignore */ }
     }, pollMs);
     return () => clearInterval(id);
-  }, [pollMs]);
+  }, [pollMs, onError]);
 
   async function onDetectFaces(root: RootInfo) {
     try {
